@@ -1,0 +1,13 @@
+*.i
+*.ii
+*.gpu
+*.ptx
+*.cubin
+*.fatbin
+
+lectures/*
+set4/set4_v2.txt
+set5/*.pkl
+set5/shuffled_lsa.txt
+set5/shuffled_reviews.json
+set6/shuffled_lsa_labelled.txt

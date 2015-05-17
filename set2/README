@@ -1,0 +1,156 @@
+This set took me roughly 7 hours, but 2-3 of those were tweaking optimal kernel.
+
+Question 1.1
+Arithmetic instructions on a GK110 have a latency of around 10 ns, so to hide
+this requires enough arithmetic instructions for the four warp schedulers to
+start as many as they can for 10 ns. Since there are four warp schedulers, they
+can start up to four arithmetic instructions total per clock cycle (although
+warps have two dispatchers, they will not start two separate arithmetic
+instructions since one takes longer than a clock cycle). GK110 clock cycles are
+roughly 1 ns, so these warp schedulers go through ten clock cycles before the
+original arithmetic instruction is done executing. Thus, it takes 4 * 10 = 40
+arithmetic instructions to hide the latency of the first one.
+
+Question 1.2
+a. This code does not diverge, as idx % 32 will be the same for all threads in a
+single warp. This is because blockSize.y = 32, so blockSize.y * threadIdx.x will
+always be a multiple of 32, and then because blockSize.x = 32 we know that each
+warp will fit into a row of the block and thus all threads in a single warp will
+have the same value for threadIdx.y. Thus, idx will always be offset from a
+multiple of 32 by a value of threadIdx.y, so idx % 32 will be the same for all
+threads in a warp, and they will all either simultaneously execute foo() or
+bar().
+
+b. This code diverges in the sense that not all threads will be executing the
+same instruction at once, but it also does not diverge in the sense that
+different threads in a single warp will never require different instructions.
+The former is due to the fact that the loop runs for threadIdx.x iterations, and
+every thread in a warp has a different value of threadIdx.x, so some threads
+will have to execute more instructions than others. However, threads with
+shorter loops that finish first will not be executing other code as though they
+were on a different logical branch; they will simply be waiting for the others
+to finish. Thus, the instructions the scheduler has to give do not diverge, and
+it will give a smaller and smaller group of threads the same instruction at the
+same time, without having to give another instruction to another group.
+
+Question 1.3
+a. This is write coalesced. Floats are 4 bytes and blockSize.x = 32, so the
+index blockSize.x * threadIdx.x will always be at the start of a cache line
+since 32 indices corresponds to 4 * 32 = 128 bytes, and multiplying this by
+threadIdx.x just produces an integer multiple of 128 bytes, which is the start
+of a cache line. Then, there are 32 threads per warp corresponding to values of
+threadIdx.x in [0, 31], so they will write to 32 consecutive indices of width 4
+bytes, corresponding to 128 bytes of data, which is exactly the length of a
+single cache line.
+
+b. This is not write coalesced. Multiplying blockSize.y = 32 by an integer puts
+you right at the start of a cache line, but because threadIdx.x is unique for
+every thread in a warp, each of the 32 threads will be writing to a different
+cache line. threadIdx.y will be the same for all the threads, but it just
+specifies where within a cache line this code is writing to.
+
+c. This is not write coalesced. As pointed out above, multiplying
+blockSize.x = 32 by an integer puts you right at the start of a cache line, but
+adding 1 to this index moves you over 4 bytes. Then, since there are 32 unique
+values of threadIdx.x in the range [0, 31], the first 31 threads in the warp
+will be able to write to the same cache line. However, the last one is
+31 * 4 = 124 bytes away from the first one, which was 4 bytes past a cache line.
+Thus, the last thread will write to 124 + 4 = 128 bytes past the first cache
+line, which is at the start of the next one. Thus, this writes to two cache
+lines.
+
+The writes are sequential, however, and I'm not totally clear on whether
+this still makes them technically coalesced or not, even though they don't write
+to the minimum number of cache lines. I'm going to go with "not coalesced" if I
+have to choose, though.
+
+Question 1.4
+a. There are no bank conflicts with this code. Every thread in a warp has a
+different threadIdx.x in the range [0, 31], but the same threadIdy.y. Thus, each
+thread in a warp will access a different bank of shared memory when reading
+lhs[i + 32 * k], since this value is stored in the ith bank (because going up an
+integer multiple of 32 indices just puts you back in the same bank). Then, each
+thread in a warp accesses the same value in the same bank when reading
+rhs[k + 128 * j] as both k and j will be the same for all 32 threads. Finally,
+there is no bank conflict when writing to output[i + 32 * j], since this will
+again be in the ith bank and therefore each thread accesses a different bank.
+
+b. This code becomes:
+1. lhs_ik = lhs[i + 32 * k];
+2. rhs_kj = rhs[k + 128 * j];
+3. output_ij = output[i + 32 * j];
+4. output_ij += lhs_ik * rhs_kj;
+5. output_[i + 32 * j] = output_ij;
+
+6. lhs_ik = lhs[i + 32 * (k + 1)];
+7. rhs_kj = rhs[(k + 1) + 128 * j];
+8. output_ij = output[i + 32 * j];
+9. output_ij += lhs_ik * rhs_kj;
+10. output_[i + 32 * j] = output_ij;
+
+c. Instruction 4 is dependent on instructions 1, 2, and 3.
+   Instruction 5 is dependent on instruction 4.
+   Instruction 8 is dependent on instruction 5.
+   Instruction 9 is dependent on instructions 6, 7, and 8.
+   Instruction 10 is dependent on instruction 9.
+
+d. The pseudo-assembly can be rewritten as:
+1. lhs_ik = lhs[i + 32 * k];
+2. rhs_kj = rhs[k + 128 * j];
+3. lhs_ik1 = lhs[i + 32 * (k + 1)];
+4. rhs_kj1 = rhs[(k + 1) + 128 * j];
+5. output_ij = output[i + 32 * j];
+
+6. output_ij += lhs_ik * rhs_kj;
+7. output_ij += lhs_ik1 * rhs_kj1;
+8. output[i + 32 * j] = output_ij;
+
+Which translates into real code with something along the lines of:
+int i = threadIdx.x;
+int j = threadIdx.y;
+float temp;
+for (int k = 0; k < 128; k += 2) {
+    temp = output[i + 32 * j];
+    temp += lhs[i + 32 * k] * rhs[k + 128 * j];
+    temp += lhs[i + 32 * (k + 1)] * rhs[(k + 1) + 128 * j];
+    output[i + 32 * j] = temp;
+}
+
+e. To speed this up further, one could also just create a stack variable to
+accumulate the entire row x column product for position i, j in the output
+matrix, since reading from and writing to it would be much faster than doing so
+with global memory. After the final sum has been calculated, then the output
+matrix in global memory would only have to be written to once with this value.
+One could also unroll the loop more in order to decrease the number of checks it
+has to do, e.g. doing the multiplication and addition for four consecutive
+values of k each time through the loop, incrementing k by 4 instead of 2.
+
+
+Question 2
+
+The output of ./transpose on my desktop is:
+Size 512 naive CPU: 0.517184 ms
+Size 512 GPU memcpy: 0.030784 ms
+Size 512 naive GPU: 0.052864 ms
+Size 512 shmem GPU: 0.021280 ms
+Size 512 optimal GPU: 0.021696 ms
+
+Size 1024 naive CPU: 2.139840 ms
+Size 1024 GPU memcpy: 0.060608 ms
+Size 1024 naive GPU: 0.134112 ms
+Size 1024 shmem GPU: 0.040672 ms
+Size 1024 optimal GPU: 0.039392 ms
+
+Size 2048 naive CPU: 39.269951 ms
+Size 2048 GPU memcpy: 0.131072 ms
+Size 2048 naive GPU: 0.393568 ms
+Size 2048 shmem GPU: 0.139040 ms
+Size 2048 optimal GPU: 0.139840 ms
+
+Size 4096 naive CPU: 170.179459 ms
+Size 4096 GPU memcpy: 0.519392 ms
+Size 4096 naive GPU: 2.162080 ms
+Size 4096 shmem GPU: 0.540992 ms
+Size 4096 optimal GPU: 0.539712 ms
+
+(Specs for reference: 2 x GeForce GTX 780 Ti, Intel i7 4820K)
