@@ -83,18 +83,23 @@ void classify(istream& in_stream, int batch_size) {
   // So that I'm not using the GPU driving my display
   gpuErrChk(cudaSetDevice(1));
 
+  // Size in bytes of the input buffers and weight vector
   size_t buffer_size = batch_size * (REVIEW_DIM + 1) * sizeof(float);
   size_t weights_size = REVIEW_DIM * sizeof(float);
 
+  // Device and host rrays of input buffers, one for each stream
   float *h_buff[N_STREAMS];
   float *d_buff[N_STREAMS];
   
+  // Array of streams
   cudaStream_t s[N_STREAMS];
 
+  // Array of memcpy cudaEvents used to prevent a stream from overwriting the
+  // data buffer while it's being copied to the device
   cudaEvent_t memcpyEvents[N_STREAMS];
-  cudaEvent_t memsetEvents[N_STREAMS];
-  // For each stream, allocate GPU memory and pinned host memoryfor the output
-  // and buffers, and initialize the stream
+
+  // For each stream, allocate GPU memory and pinned host memory for the
+  // buffers, initialize the stream, and ready each stream to read input
   for (int i = 0; i < N_STREAMS; i++) {
     gpuErrChk(cudaMallocHost((void **) &(h_buff[i]), buffer_size));
     gpuErrChk(cudaMalloc((void **) &(d_buff[i]), buffer_size));
@@ -103,81 +108,101 @@ void classify(istream& in_stream, int batch_size) {
     
     gpuErrChk(cudaEventCreate(&memcpyEvents[i]));
     gpuErrChk(cudaEventRecord(memcpyEvents[i]));
-
-    gpuErrChk(cudaEventCreate(&memsetEvents[i]));
-    gpuErrChk(cudaEventRecord(memsetEvents[i]));
   }
 
+  // Initialize the weights vector with random Gaussian noise
   float *h_weights = (float *) malloc(weights_size);
   gaussianFill(h_weights, REVIEW_DIM);
   
-  float *d_weights, *d_spare_weights;
+  // Copy the weights vector to the device
+  float *d_weights;
   cudaMalloc((void **) &d_weights, weights_size);
-  cudaMalloc((void **) &d_spare_weights, weights_size);
-  
   cudaMemcpy(d_weights, h_weights, weights_size, cudaMemcpyHostToDevice);
-  cudaMemset(d_spare_weights, 0.0, weights_size);
 
-  float wrong = 0.0;
+  // Counter for the number of misclassifications per batch, the sum across all
+  // batches, and the number of batches executed
+  float wrong = 0.0, total_wrong = 0.0;
+  int batch_count = 0;
 
-  // main loop to process input lines (each line corresponds to a review)
+  // Main loop to process input lines (each line corresponds to a review)
   int review_idx = 0, relative_idx, stream_i = 0, batch_i = batch_size - 1;
   div_t which_stream;
   for (string review_str; getline(in_stream, review_str); review_idx++) {
     // Get where we are relative to the start of the first stream's buffer
     relative_idx = review_idx % (N_STREAMS * batch_size);
+
     // Figure out which stream's buffer we're in, and at what position
     which_stream = div(relative_idx, batch_size);
     stream_i = which_stream.quot;
     batch_i = which_stream.rem;
+    
+    // Make sure this stream's buffer isn't still being copied to the device
+    gpuErrChk(cudaEventSynchronize(memcpyEvents[stream_i]));
+
     // Read in a review and transpose it so that the first batch_size elements
     // of the buffer are the first elements of all the review vectors, then the
-    // second set of batch_size elements are the second elements, etc.
-    gpuErrChk(cudaEventSynchronize(memcpyEvents[stream_i]));
+    // second set of batch_size elements are the second elements, etc. since
+    // this maximizes coalescing as all batch_size threads per kernel will make
+    // spacially consecutive accesses to get each element
     readLSAReview(review_str, h_buff[stream_i] + batch_i, batch_size);
 
     // If we've filled up a buffer, copy it to the GPU and call the kernel, then
     // transfer the output back
     if (batch_i == batch_size - 1) {
+      // Copy the input buffer to the device and signal that the process is done
       gpuErrChk(cudaMemcpyAsync(d_buff[stream_i], h_buff[stream_i], buffer_size,
                                 cudaMemcpyHostToDevice, s[stream_i]));
       gpuErrChk(cudaEventRecord(memcpyEvents[stream_i]));
-      
-      gpuErrChk(cudaEventSynchronize(memsetEvents[stream_i]))
-      wrong += cudaClassify(d_buff[stream_i], batch_size, STEP_SIZE, d_weights, d_spare_weights);
-      
-      gpuErrChk(cudaMemsetAsync(d_spare_weights, 0.0, weights_size,
-                                s[stream_i]));
-      gpuErrChk(cudaEventRecord(memsetEvents[stream_i]));
+
+      // Call the kernel and get the number of misclassifications
+      wrong = cudaClassify(d_buff[stream_i], batch_size, batch_size, STEP_SIZE,
+                           d_weights);
+
+      // Update the total number of misclassifications and the batch count
+      total_wrong += wrong;
+      batch_count++;
+      printf("Batch %d, error rate: %f\n", batch_count, wrong / batch_size);
     }
   }
 
   // Get the remaining unassigned reviews and do a batch of size however many
   // there are left
   if (batch_i != batch_size - 1) {
+    // Copy the input buffer to the device
     gpuErrChk(cudaMemcpyAsync(d_buff[stream_i], h_buff[stream_i], buffer_size,
                               cudaMemcpyHostToDevice, s[stream_i]));
-    gpuErrChk(cudaEventRecord(memcpyEvents[stream_i]));
-    wrong += cudaClassify(d_buff[stream_i], batch_i + 1, STEP_SIZE, d_weights,
-                          d_spare_weights);
+
+    // Call the kernel
+    wrong = cudaClassify(d_buff[stream_i], batch_i + 1, batch_size, STEP_SIZE,
+                         d_weights);
+
+    // Update cumulative information
+    total_wrong += wrong;
+    batch_count++;
+    printf("Batch %d, error rate: %f\n", batch_count, wrong / (batch_i + 1));
   }
 
-  printf("Total incorrect rate: %f\n", wrong / review_idx);
+  printf("Overall error rate: %f\n", total_wrong / review_idx);
 
+  // Copy the weights back to the device and print them
+  cudaMemcpy(h_weights, d_weights, weights_size, cudaMemcpyDeviceToHost);
+  printf("Final weights are:\n[");
+  for (int i = 0; i < REVIEW_DIM - 1; i++)
+    printf("%f, ", h_weights[i]);
+  printf("%f]\n", h_weights[REVIEW_DIM - 1]);
+
+  // Free the weight vectors
   free(h_weights);
   cudaFree(d_weights);
-  cudaFree(d_spare_weights);
 
-  // TODO: print out weights
-
-  // Free the pinned output and host buffers, and destroy the streams
+  // Free all the other dynamically-allocated memory, and destroy the streams
+  // and events used
   for (int i = 0; i < N_STREAMS; i++) {
     gpuErrChk(cudaFreeHost(h_buff[i]));
     gpuErrChk(cudaFree(d_buff[i]));
     gpuErrChk(cudaStreamSynchronize(s[i]));
     gpuErrChk(cudaStreamDestroy(s[i]));
     gpuErrChk(cudaEventDestroy(memcpyEvents[i]));
-    gpuErrChk(cudaEventDestroy(memsetEvents[i]));
   }
 }
 
