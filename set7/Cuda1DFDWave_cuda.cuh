@@ -11,5 +11,11 @@
 If you have any functions in your .cu file that need to be
 accessed from the outside, declare them here */
 
+void call_update_nodes_kernel(unsigned int grid_size, unsigned int block_size,
+                              float *old, float *current, int length,
+                              float courant_squared);
+
+void call_update_boundaries_kernel(float *current, float left_boundary_value,
+                                   int length);
 
 #endif // CUDA_1D_FD_WAVE_CUDA_CUH

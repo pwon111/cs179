@@ -151,9 +151,18 @@ int main(int argc, char* argv[]) {
     //Space on the CPU to copy file data back from GPU
     float *file_output = new float[numberOfNodes];
 
-    /* TODO: Create GPU memory for your calculations. 
-    As an initial condition at time 0, zero out your memory as well. */
-    
+    // Create pointers for timesteps t and t - 1, as well as one to swap them,
+    float *d_old, *d_current, *d_temp;
+    // Figure out how much space each timestep's values take up
+    size_t nodes_size = numberOfNodes * sizeof(float);
+
+    // Allocate space for the two timesteps needed to calculate step t + 1
+    cudaMalloc((void **) &d_old, nodes_size);
+    cudaMalloc((void **) &d_current, nodes_size);
+
+    // Set them to all 0s
+    cudaMemset(d_old, 0.0, nodes_size);
+    cudaMemset(d_current, 0.0, nodes_size);
     
     // Looping through all times t = 0, ..., t_max
     for (size_t timestepIndex = 0; timestepIndex < numberOfTimesteps;
@@ -163,12 +172,17 @@ int main(int argc, char* argv[]) {
             printf("Processing timestep %8zu (%5.1f%%)\n",
                  timestepIndex, 100 * timestepIndex / float(numberOfTimesteps));
         }
-        
-        
-        /* TODO: Call a kernel to solve the problem (you'll need to make
-        the kernel in the .cu file) */
 
-        
+        // Update nodes 1 through length - 2  (where indexing starts from 0)
+        call_update_nodes_kernel(blocks, threadsPerBlock, d_old, d_current,
+                                 numberOfNodes, courantSquared);
+
+        // The kernel writes timestep t + 1 into the memory used for t - 1, so
+        // swap the old and current pointers so that they're in the right order
+        d_temp = d_old;
+        d_old = d_current;
+        d_current = d_temp;
+
         //Left boundary condition on the CPU - a sum of sine waves
         const float t = timestepIndex * dt;
         float left_boundary_value;
@@ -177,20 +191,20 @@ int main(int argc, char* argv[]) {
         } else {
             left_boundary_value = 0;
         }
-        
-        
-        /* TODO: Apply left and right boundary conditions on the GPU. 
-        The right boundary conditon will be 0 at the last position
-        for all times t */
+
+        // Update the boundary conditions, with the one on the right always 0
+        call_update_boundaries_kernel(d_current, left_boundary_value,
+                                      numberOfNodes);
         
         // Check if we need to write a file
         if (CUDATEST_WRITE_ENABLED == true && numberOfOutputFiles > 0 &&
                 (timestepIndex+1) % (numberOfTimesteps / numberOfOutputFiles) 
                 == 0) {
             
-            
-            /* TODO: Copy data from GPU back to the CPU in file_output */
-            
+            // Copy the current output from the GPU back to the host
+            cudaMemcpy(file_output, d_current, nodes_size,
+                       cudaMemcpyDeviceToHost);
+
             printf("writing an output file\n");
             // make a filename
             char filename[500];
@@ -206,10 +220,9 @@ int main(int argc, char* argv[]) {
         
     }
     
-    
-    /* TODO: Clean up GPU memory */
-  
-  
+    // Free memory allocated on the GPU
+    cudaFree(d_old);
+    cudaFree(d_current);
 }
   
   printf("You can now turn the output files into pictures by running "

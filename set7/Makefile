@@ -2,7 +2,7 @@ CC = /usr/bin/g++
 
 LD_FLAGS = -lrt
 
-CUDA_PATH       ?= /usr/local/cuda-6.5
+CUDA_PATH       ?= /usr/local/cuda-7.0
 CUDA_INC_PATH   ?= $(CUDA_PATH)/include
 CUDA_BIN_PATH   ?= $(CUDA_PATH)/bin
 CUDA_LIB_PATH   ?= $(CUDA_PATH)/lib64
@@ -35,7 +35,7 @@ else
 endif
 
 
-TARGETS = Cuda1DFDWave
+TARGETS = Cuda1DFDWave gillespie_simulation
 
 all: $(TARGETS)
 
@@ -43,6 +43,12 @@ Cuda1DFDWave: Cuda1DFDWave.cc Cuda1DFDWave_cuda.o
 	$(CC) $< -o $@ Cuda1DFDWave_cuda.o -O3 $(LDFLAGS) -Wall -I$(CUDA_INC_PATH) -fopenmp
 
 Cuda1DFDWave_cuda.o: Cuda1DFDWave_cuda.cu
+	$(NVCC) $(NVCCFLAGS) -O3 $(EXTRA_NVCCFLAGS) $(GENCODE_FLAGS) -I$(CUDA_INC_PATH) -o $@ -c $<
+
+gillespie_simulation: gillespie_simulation.cc gillespie_simulation_cuda.o
+	$(CC) $< -o $@ gillespie_simulation_cuda.o -O3 $(LDFLAGS) -lcurand -Wall -I$(CUDA_INC_PATH) -fopenmp
+
+gillespie_simulation_cuda.o: gillespie_simulation_cuda.cu
 	$(NVCC) $(NVCCFLAGS) -O3 $(EXTRA_NVCCFLAGS) $(GENCODE_FLAGS) -I$(CUDA_INC_PATH) -o $@ -c $<
 
 clean:
