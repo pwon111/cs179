@@ -85,7 +85,7 @@ void timestep_update_kernel(int *concentrations, int *states, float *times,
         unsigned int actual_i;
         // Scale our timestep checking so that our timesteps evenly divide up
         // the specified total_time interval
-        float time_scale = timestep_count / total_time;
+        float time_scale = total_time / timestep_count;
         // Loop through the simulation's timestep records, filling in the ones
         // that we haven't yet, until we get to a timestep past the current time
         for (unsigned int i = 0; i < timestep_count; i++) {
