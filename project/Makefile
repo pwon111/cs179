@@ -1,19 +1,51 @@
-CC = g++
-FLAGS = -g -o
+CC = /usr/bin/g++
 
-INCLUDE = -I/usr/X11R6/include -I/usr/include -I/home/nailen/Documents/cs179/project/
-LIBDIR = -L/usr/X11R6/lib -L/usr/local/lib
-SRC = raytrace.cpp
-LIBS = -lm
+LD_FLAGS = -lrt
 
-EXENAME = rt
+CUDA_PATH       ?= /usr/local/cuda-7.0
+CUDA_INC_PATH   ?= $(CUDA_PATH)/include
+CUDA_BIN_PATH   ?= $(CUDA_PATH)/bin
+CUDA_LIB_PATH   ?= $(CUDA_PATH)/lib64
 
-all: rt
+# CUDA code generation flags
+GENCODE_FLAGS   := -gencode arch=compute_20,code=sm_20 -gencode arch=compute_30,code=sm_30 -gencode arch=compute_35,code=sm_35
 
-rt: $(SRC)
-	$(CC) $(FLAGS) $(EXENAME) $(INCLUDE) $(LIBDIR) $(SRC) $(LIBS)
+# Common binaries
+NVCC            ?= $(CUDA_BIN_PATH)/nvcc
+
+# OS-specific build flags
+ifneq ($(DARWIN),)
+      LDFLAGS   := -Xlinker -rpath $(CUDA_LIB_PATH) -L$(CUDA_LIB_PATH) -lcudart -lcufft
+      CCFLAGS   := -arch $(OS_ARCH)
+else
+  ifeq ($(OS_SIZE),32)
+      LDFLAGS   := -L$(CUDA_LIB_PATH) -lcudart -lpng
+      CCFLAGS   := -m32
+  else
+      LDFLAGS   := -L$(CUDA_LIB_PATH) -lcudart -lpng
+      CCFLAGS   := -m64
+  endif
+endif
+
+# OS-architecture specific flags
+ifeq ($(OS_SIZE),32)
+      NVCCFLAGS := -m32
+else
+      NVCCFLAGS := -m64
+endif
+
+
+TARGETS = raytrace
+
+all: $(TARGETS)
+
+raytrace: raytrace.c raytrace_cuda.o
+	$(CC) $< -o $@ raytrace_cuda.o -O3 $(LDFLAGS) -lcurand -Wall -I$(CUDA_INC_PATH) -fopenmp
+
+raytrace_cuda.o: raytrace_cuda.cu
+	$(NVCC) $(NVCCFLAGS) -O3 $(EXTRA_NVCCFLAGS) $(GENCODE_FLAGS) -I$(CUDA_INC_PATH) -o $@ -c $<
 
 clean:
-	rm -f *.o $(EXENAME)
+	rm -f *.o $(TARGETS)
 
-PHONY: all clean
+again: clean $(TARGETS)

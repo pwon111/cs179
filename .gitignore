@@ -12,3 +12,4 @@ set5/shuffled_lsa.txt
 set5/shuffled_reviews.json
 set6/shuffled_lsa_labelled.txt
 set7/output/*
+project/output/*
