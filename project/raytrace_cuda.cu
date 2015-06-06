@@ -429,16 +429,13 @@ void raytrace_kernel(float *screen, Sphere *spheres, Plane *planes,
 
             get_reflection(spheres, planes, lights, sphere_count, plane_count,
                            light_count, intersect, cam_pos, n, pixel);
-            if (intersect.sphere) {
-                get_refraction(spheres, planes, lights, sphere_count,
-                               plane_count, light_count, intersect, cam_pos, n,
-                               pixel);
-            }
+            get_refraction(spheres, planes, lights, sphere_count, plane_count,
+                           light_count, intersect, cam_pos, n, pixel);
         }
     }
 }
 
-/* Calls the kernel to raytrace the current scene. */
+/* This function calls the kernel to raytrace the current scene. */
 void call_raytrace_kernel(float *screen, Sphere *spheres, Plane *planes,
                           Light *lights, int sphere_count, int plane_count,
                           int light_count, float *cam_pos, float *e1, float *e2,
