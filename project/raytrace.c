@@ -9,19 +9,18 @@
 #include "entities.h"
 #include "raytrace_cuda.cuh"
 
-#define RECURSION_DEPTH 1
+#define MAX_INTENSITY 255   // Maximum color intensity
+#define N_INDEX 1.52f       // Refraction index of glass
 
-#define MAX_INTENSITY 255 // Maximum color intensity
-#define N_INDEX 1.52f // Refraction index of glass
+#define FD 0.05     // Camera focal length
+#define FX 0.035    // Width of camera sensor
+#define XRES 1920   // Image x resolution
+#define YRES 1080   // Image y resolution
 
-#define FD 0.05
-#define FX 0.035
-#define XRES 1920
-#define YRES 1080
+#define SPHERE_COUNT 3  // Number of spheres in the scene
+#define PLANE_COUNT 1   // Number of planes in the scene
+#define LIGHT_COUNT 1   // Number of lights in the scene
 
-#define SPHERE_COUNT 3
-#define PLANE_COUNT 1
-#define LIGHT_COUNT 1
 
 /* Utility function to normalize a 3-float vector on the host. */
 void h_normalize(float *v) {

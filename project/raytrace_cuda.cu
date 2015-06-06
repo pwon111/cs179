@@ -1,5 +1,6 @@
 #include "raytrace_cuda.cuh"
 
+
 /* Utility function to normalize a vector. */
 __device__
 void normalize(float *v) {
@@ -350,14 +351,27 @@ void get_refraction(Sphere *spheres, Plane *planes, Light *lights,
     if (cossq2 < 0) {
         return;
     }
-    // Calculate the refracted ray, and find its intersection with the other
-    // side of the sphere
+    // Calculate the refracted ray
     for (int i = 0; i < 3; i++) {
         incoming[i] = n * incoming[i]
                       + (n * cos1 - sqrt(cossq2)) * intersect.normal[i];
     }
-    Intersect next = get_sphere_intersection(incoming, intersect.position,
-                                             (Sphere *) intersect.object, 1);
+    // If we're refracting through a plane, we cam just get the next object the
+    // ray hits and be done
+    Intersect next;
+    if (!intersect.sphere) {
+        next = get_nearest_intersection(incoming, intersect.position,
+                                        intersect.object, spheres, planes,
+                                        sphere_count, plane_count);
+        get_shadows(spheres, planes, lights, sphere_count, plane_count,
+                    light_count, next, intersect.position, pixel);
+        return;
+    }
+
+    // Otherwise, we have to find its intersection with the other side of the
+    // sphere, refract it back through the surface, and then go on
+    next = get_sphere_intersection(incoming, intersect.position,
+                                   (Sphere *) intersect.object, 1);
 
     // Repeat the process, refracting the ray with the opposite relative index
     // of refraction

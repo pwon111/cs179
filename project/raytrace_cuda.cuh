@@ -2,6 +2,7 @@
 
 #include "entities.h"
 
+
 __device__ void normalize(float *v);
 
 __device__ float dotf(float *a, float *b);
